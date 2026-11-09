@@ -1,4 +1,4 @@
-##dubizzle Cars AI Assistant
+# dubizzle Cars AI Assistant
 
 Overview
 This project is a prototype of an AI assistant for the dubizzle Cars sample inventory. It lets users search for cars in natural language, ask questions about matching listings, refine a search and request a test drive.
