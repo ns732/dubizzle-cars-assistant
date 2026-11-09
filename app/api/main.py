@@ -163,7 +163,7 @@ def deduplicate_listings(cars):
             str(car.get(field) or "").strip().lower()
             for field in (
                 "make", "model", "trim", "year", "title",
-                "price_aed", "mileage_km", "photo_url",
+                "price_aed", "mileage_km",
             )
         )
         if signature in seen:
@@ -298,6 +298,18 @@ def extract_preferences(message, existing=None):
     if changed:
         preferences["updated_from_conversation"] = True
     return preferences, changed
+
+
+def is_inventory_count_query(message):
+    """Recognise questions asking for the total number of inventory listings."""
+    text = (message or "").strip().casefold()
+    patterns = (
+        r"\bhow many\s+(?:cars?|vehicles?|listings?)\b",
+        r"\b(?:total|overall)\s+(?:car|vehicle|listing)s?\s+count\b",
+        r"\b(?:total|overall)\s+(?:number|count)\s+of\s+(?:cars?|vehicles?|listings?)\b",
+        r"\bhow many\b.*\bin the (?:entire )?inventory\b",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def is_liked_car_recall(message):
@@ -671,28 +683,35 @@ def chat(request: ChatRequest):
                 "liked_cars": [public_car(item) for item in liked_cars],
             }
 
-        preference_context = format_saved_preferences(saved_preferences)
-        memory_context = (
-            "Previously saved customer preferences: "
-            + "; ".join(preference_context)
-            if preference_context else ""
-        )
-        enriched_history = list(history or [])
-        if memory_context:
-            enriched_history.append({
-                "role": "assistant",
-                "content": memory_context,
-            })
+        # Answer inventory-count questions directly from the loaded dataset.
+        # This avoids sending a count question through normal car retrieval.
+        if is_inventory_count_query(message):
+            inventory = getattr(retriever, "inventory", None)
+            if inventory is None:
+                raise RuntimeError("The vehicle inventory has not been loaded.")
 
-        result = search_service.search(
-            message=message,
-            conversation_history=enriched_history,
-        )
+            raw_cars = inventory.to_dict(orient="records")
+            distinct_count = len(deduplicate_listings(raw_cars))
+            response_text = (
+                f"There are currently {distinct_count} distinct car listings "
+                "in our inventory."
+            )
+            memory.save_message(request.user_id, "assistant", response_text)
+            return {
+                "user_id": request.user_id,
+                "returning_user": returning_user,
+                "profile": profile,
+                "response": response_text,
+                "intent": "inventory_count",
+                "requirements": {},
+                "cars": [],
+                "liked_cars": [public_car(item) for item in liked_cars],
+                "inventory_count": distinct_count,
+            }
 
-        # Retain previous filters only when the message is a genuine
-        # refinement of the previous search. A new inventory query must
-        # always be searched independently of the customer's saved preferences.
-        requirements = dict(result.get("requirements") or {})
+        # Do not pass saved preferences or the full previous conversation
+        # into a fresh LLM extraction. Follow-up filters are merged below,
+        # deterministically, only when the message is a genuine refinement.
         has_previous_search = bool(previous_cars)
 
         preference_to_requirement = {
@@ -709,20 +728,35 @@ def chat(request: ChatRequest):
             "transmission": "transmission",
         }
 
-        # Explicit search wording means the user is starting a new search,
-        # not refining the previous one.
+        # Parse the current message independently. This prevents an old
+        # Toyota/budget/SUV preference from contaminating a new BYD search.
+        result = search_service.search(
+            message=message,
+            conversation_history=[],
+        )
+
+        requirements = dict(result.get("requirements") or {})
+
         starts_new_search = bool(re.search(
-            r"\\b(show|find|search|list|how many|do you have|"
-            r"what cars|which cars|i want|looking for)\\b",
+            r"\b(find|search|show|list|browse|looking for|i want|"
+            r"do you have|how many|all)\b",
             lower_message
         ))
 
-        # These are common short follow-ups that refine the previous search.
+        # A different explicitly extracted make always starts a new search.
+        prior_make = str(
+            saved_preferences.get("preferred_make") or ""
+        ).strip().casefold()
+        current_make = str(requirements.get("make") or "").strip().casefold()
+
+        if current_make and prior_make and current_make != prior_make:
+            starts_new_search = True
+
         filter_follow_up = bool(re.search(
-            r"\\b(only|also|instead|what about|how about|from|since|"
+            r"\b(only|also|instead|what about|how about|from|since|"
             r"onwards|newer|older|under|below|less than|above|over|"
             r"more than|between|km|kms|suv|sedan|hatchback|automatic|"
-            r"manual|petrol|diesel|hybrid|electric|20\\d{2})\\b",
+            r"manual|petrol|diesel|hybrid|electric|20\d{2})\b",
             lower_message
         ))
 
@@ -730,7 +764,9 @@ def chat(request: ChatRequest):
             has_previous_search
             and filter_follow_up
             and not starts_new_search
-            and result.get("intent") in ("search_cars", "general_car_question")
+            and result.get("intent") in (
+                "search_cars", "general_car_question", "out_of_scope"
+            )
         )
 
         if is_follow_up:
