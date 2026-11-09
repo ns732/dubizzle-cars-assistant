@@ -689,10 +689,9 @@ def chat(request: ChatRequest):
             conversation_history=enriched_history,
         )
 
-        # Deterministically retain the previous search filters for follow-ups.
-        # Long-term preferences are only applied when this user has a prior
-        # search result, preventing an unrelated old preference from silently
-        # filtering a brand-new search.
+        # Retain previous filters only when the message is a genuine
+        # refinement of the previous search. A new inventory query must
+        # always be searched independently of the customer's saved preferences.
         requirements = dict(result.get("requirements") or {})
         has_previous_search = bool(previous_cars)
 
@@ -710,29 +709,44 @@ def chat(request: ChatRequest):
             "transmission": "transmission",
         }
 
-        # Recognise short filter-only follow-ups even if the LLM labels them
-        # incorrectly. Examples: "Only 2024 onwards" or "under AED 90,000".
-        filter_follow_up = bool(re.search(
-            r"\b(only|also|instead|from|since|onwards|newer|older|"
-            r"under|below|less than|above|over|more than|between|"
-            r"km|kms|suv|sedan|hatchback|automatic|manual|petrol|diesel|"
-            r"hybrid|electric|20\d{2})\b",
+        # Explicit search wording means the user is starting a new search,
+        # not refining the previous one.
+        starts_new_search = bool(re.search(
+            r"\\b(show|find|search|list|how many|do you have|"
+            r"what cars|which cars|i want|looking for)\\b",
             lower_message
         ))
 
-        if has_previous_search and filter_follow_up:
+        # These are common short follow-ups that refine the previous search.
+        filter_follow_up = bool(re.search(
+            r"\\b(only|also|instead|what about|how about|from|since|"
+            r"onwards|newer|older|under|below|less than|above|over|"
+            r"more than|between|km|kms|suv|sedan|hatchback|automatic|"
+            r"manual|petrol|diesel|hybrid|electric|20\\d{2})\\b",
+            lower_message
+        ))
+
+        is_follow_up = (
+            has_previous_search
+            and filter_follow_up
+            and not starts_new_search
+            and result.get("intent") in ("search_cars", "general_car_question")
+        )
+
+        if is_follow_up:
             result["intent"] = "search_cars"
 
         if result["intent"] == "search_cars":
-            for preference_key, requirement_key in preference_to_requirement.items():
-                # A newly extracted value takes precedence; otherwise retain
-                # the previously saved filter.
-                if requirements.get(requirement_key) is None:
-                    saved_value = saved_preferences.get(preference_key)
-                    if saved_value is not None:
-                        requirements[requirement_key] = saved_value
+            # Only inherit saved filters for a follow-up. Never apply an old
+            # Toyota/budget/body-type preference to a fresh BYD/BMW/etc. search.
+            if is_follow_up:
+                for preference_key, requirement_key in preference_to_requirement.items():
+                    if requirements.get(requirement_key) is None:
+                        saved_value = saved_preferences.get(preference_key)
+                        if saved_value is not None:
+                            requirements[requirement_key] = saved_value
 
-            # Save the merged filters so the next turn can build on them.
+            # Save filters extracted from this search for later recall.
             preference_updates = {}
             for preference_key, requirement_key in preference_to_requirement.items():
                 value = requirements.get(requirement_key)
@@ -747,8 +761,7 @@ def chat(request: ChatRequest):
                     preferences=saved_preferences,
                 )
 
-            # Re-run retrieval with the merged filters. This makes filter
-            # retention independent of the LLM's ability to reconstruct context.
+            # Run retrieval with the requirements for this turn.
             cars = retriever.search(
                 query=message,
                 make=requirements.get("make"),

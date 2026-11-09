@@ -212,7 +212,7 @@ def display_listing_image(image_url, caption=None):
                                                               
 
 defaults = {
-    "user_id": "demo_customer_01",
+    "user_id": "demo_customer_05",
     "name": "",
     "page": "Home",
     "chat_open": False,
