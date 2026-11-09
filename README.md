@@ -136,20 +136,17 @@ With more time, I would connect the assistant to live inventory and dealership s
 The following screenshots show examples of the application running.
 
 Inventory search
-<img width="957" height="406" alt="inventory-search" src="https://github.com/user-attachments/assets/47dfdf8b-33b3-41c0-a8d7-dbae29e79d72" />
 
 
 ![Inventory Search](screenshots/inventory-search.png)
 
 Multi-turn conversation
-<img width="951" height="440" alt="multi-turn-chat" src="https://github.com/user-attachments/assets/39a96b7e-bd56-4fd6-bb4b-ec8310cfb5c6" />
 
 
 ![Multi-turn Conversation](screenshots/multi-turn-chat.png)
 
 
 Returning-user memory
-<img width="959" height="425" alt="returning-user-memory" src="https://github.com/user-attachments/assets/c14cbbcf-c847-44d4-be67-1072b7245740" />
 
 
 ![Returning User Memory](screenshots/returning-user-memory.png)
